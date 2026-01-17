@@ -1,0 +1,896 @@
+//! HID report descriptor for a 3-axis wheel + PID (force feedback) subset.
+//!
+//! Target: Linux `hid-pidff` with Constant Force.
+
+/// Report ID for the main joystick axes input report.
+pub const RID_AXES_IN: u8 = 0x01;
+/// Report ID for PID state input report.
+pub const RID_PID_STATE_IN: u8 = 0x02;
+
+// PID (Physical Interface Device) reports.
+pub const RID_PID_SET_EFFECT_OUT: u8 = 0x10;
+pub const RID_PID_SET_ENVELOPE_OUT: u8 = 0x1A;
+pub const RID_PID_SET_CONDITION_OUT: u8 = 0x1B;
+pub const RID_PID_SET_PERIODIC_OUT: u8 = 0x1C;
+pub const RID_PID_EFFECT_OPERATION_OUT: u8 = 0x11;
+pub const RID_PID_DEVICE_GAIN_OUT: u8 = 0x12;
+pub const RID_PID_POOL_FEATURE: u8 = 0x13;
+pub const RID_PID_BLOCK_LOAD_FEATURE: u8 = 0x14;
+pub const RID_PID_BLOCK_FREE_OUT: u8 = 0x15;
+pub const RID_PID_DEVICE_CONTROL_OUT: u8 = 0x16;
+pub const RID_PID_CREATE_NEW_EFFECT_FEATURE: u8 = 0x17;
+pub const RID_PID_SET_CONSTANT_FORCE_OUT: u8 = 0x18;
+pub const RID_PID_SET_CUSTOM_FORCE_DATA_OUT: u8 = 0x19;
+
+/// HID report descriptor bytes.
+///
+/// Notes:
+/// - Uses Report IDs for all reports. This means the Report ID byte is present on interrupt IN/OUT,
+///   and also commonly present for control GET_REPORT/SET_REPORT paths on hosts (Linux included).
+/// - Includes the PID reports required by Linux `hid-pidff`, plus Set Constant Force (0x73).
+pub const REPORT_DESCRIPTOR: &[u8] = &[
+    // -------------------------------------------
+    // Wheel (axes) + PID (force feedback) reports
+    // -------------------------------------------
+    0x05,
+    0x01, // Usage Page (Generic Desktop)
+    0x09,
+    0x04, // Usage (Joystick)
+    0xA1,
+    0x01, // Collection (Application)
+    // -----------------------------
+    // Joystick / wheel axes (Input)
+    // -----------------------------
+    0x85,
+    RID_AXES_IN, // Report ID
+    // Buttons (8)
+    0x05,
+    0x09, //   Usage Page (Button)
+    0x19,
+    0x01, //   Usage Minimum (Button 1)
+    0x29,
+    0x08, //   Usage Maximum (Button 8)
+    0x15,
+    0x00, //   Logical Minimum (0)
+    0x25,
+    0x01, //   Logical Maximum (1)
+    0x75,
+    0x01, //   Report Size (1)
+    0x95,
+    0x08, //   Report Count (8)
+    0x81,
+    0x02, //   Input (Data,Var,Abs)
+    // Axes: X (signed), Y (unsigned-ish), Rz (unsigned-ish)
+    0x05,
+    0x01, //   Usage Page (Generic Desktop)
+    0x09,
+    0x30, //   Usage (X)
+    0x16,
+    0x01,
+    0x80, //   Logical Minimum (-32767)
+    0x26,
+    0xFF,
+    0x7F, //   Logical Maximum (32767)
+    0x75,
+    0x10, //   Report Size (16)
+    0x95,
+    0x01, //   Report Count (1)
+    0x81,
+    0x02, //   Input (Data,Var,Abs)
+    0x09,
+    0x31, //   Usage (Y)
+    0x15,
+    0x00, //   Logical Minimum (0)
+    0x26,
+    0xFF,
+    0x7F, //   Logical Maximum (32767)
+    0x75,
+    0x10, //   Report Size (16)
+    0x95,
+    0x01, //   Report Count (1)
+    0x81,
+    0x02, //   Input (Data,Var,Abs)
+    0x09,
+    0x35, //   Usage (Rz)
+    0x15,
+    0x00, //   Logical Minimum (0)
+    0x26,
+    0xFF,
+    0x7F, //   Logical Maximum (32767)
+    0x75,
+    0x10, //   Report Size (16)
+    0x95,
+    0x01, //   Report Count (1)
+    0x81,
+    0x02, //   Input (Data,Var,Abs)
+    // -----------------------------
+    // PID State (Input) - Usage 0x92
+    // -----------------------------
+    0x05,
+    0x0F, // Usage Page (Physical Interface Device)
+    0x09,
+    0x92, // Usage (PID State Report)
+    0xA1,
+    0x02, // Collection (Logical)
+    0x85,
+    RID_PID_STATE_IN, // Report ID
+    0x09,
+    0x9F, // Usage (Device is Pause)
+    0x09,
+    0xA0, // Usage (Actuators Enabled)
+    0x09,
+    0xA4, // Usage (Safety Switch)
+    0x09,
+    0xA6, // Usage (Actuator Power)
+    0x09,
+    0x94, // Usage (Effect Playing)
+    0x15,
+    0x00, // Logical Minimum (0)
+    0x25,
+    0x01, // Logical Maximum (1)
+    0x75,
+    0x01, // Report Size (1)
+    0x95,
+    0x05, // Report Count (5)
+    0x81,
+    0x02, // Input (Data,Var,Abs)
+    0x75,
+    0x03, // Padding to 1 byte
+    0x95,
+    0x01,
+    0x81,
+    0x03, // Input (Const,Var,Abs)
+    0xC0, // End Collection
+    // -----------------------------
+    // PID Set Effect (Output) - Usage 0x21
+    // -----------------------------
+    0x05,
+    0x0F,
+    0x09,
+    0x21, // Usage (Set Effect Report)
+    0xA1,
+    0x02, // Collection (Logical)
+    0x85,
+    RID_PID_SET_EFFECT_OUT,
+    // Effect Block Index
+    0x09,
+    0x22,
+    0x15,
+    0x01, // Logical Min 1
+    0x25,
+    0x04, // Logical Max 4 effects
+    0x75,
+    0x08,
+    0x95,
+    0x01,
+    0x91,
+    0x02, // Output (Data,Var,Abs)
+    // Effect Type (only Constant Force 0x26)
+    0x09,
+    0x25,
+    0xA1,
+    0x02, // Collection (Logical)
+    0x19,
+    0x26, // Usage Min (Constant Force)
+    0x29,
+    0x26, // Usage Max (Constant Force)
+    0x15,
+    0x01, // Logical Min 1
+    0x25,
+    0x01, // Logical Max 1
+    0x75,
+    0x08,
+    0x95,
+    0x01,
+    0x91,
+    0x00, // Output (Data,Array,Abs)
+    0xC0, // End Collection
+    // Duration / Trigger Repeat / Sample Period / Start Delay
+    0x09,
+    0x50, // Duration
+    0x09,
+    0x54, // Trigger Repeat Interval
+    0x09,
+    0x51, // Sample Period
+    0x09,
+    0xA7, // Start Delay
+    0x15,
+    0x00,
+    0x26,
+    0xFF,
+    0x7F,
+    0x75,
+    0x10,
+    0x95,
+    0x04,
+    0x91,
+    0x02,
+    // Gain
+    0x09,
+    0x52,
+    0x15,
+    0x00,
+    0x25,
+    0xFF,
+    0x75,
+    0x08,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    // Trigger Button
+    0x09,
+    0x53,
+    0x15,
+    0x00,
+    0x25,
+    0xFF,
+    0x75,
+    0x08,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    // Axes Enable (X only)
+    0x09,
+    0x55,
+    0xA1,
+    0x02, // Collection (Logical)
+    0x05,
+    0x01, //   Usage Page (Generic Desktop)
+    0x09,
+    0x30, //   Usage (X)
+    0x15,
+    0x00,
+    0x25,
+    0x01,
+    0x75,
+    0x01,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    0xC0, // End Collection
+    // Direction Enable
+    0x05,
+    0x0F,
+    0x09,
+    0x56,
+    0x15,
+    0x00,
+    0x25,
+    0x01,
+    0x75,
+    0x08,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    // Direction (degrees * 100)
+    // Must be in its own Logical Collection so hid-pidff can find it as a "special field".
+    0x09,
+    0x57,
+    0xA1,
+    0x02, // Collection (Logical)
+    0x0B,
+    0x01,
+    0x00,
+    0x0A,
+    0x00, //   Usage (Ordinals: Instance 1)
+    0x15,
+    0x00,
+    0x27,
+    0xA0,
+    0x8C,
+    0x00,
+    0x00, //   Logical Maximum (36000)
+    0x75,
+    0x10,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    0xC0, // End Direction collection
+    0xC0, // End Set Effect collection
+    // -----------------------------
+    // PID Set Envelope (Output) - Usage 0x5A
+    // -----------------------------
+    0x05,
+    0x0F,
+    0x09,
+    0x5A, // Usage (Set Envelope Report)
+    0xA1,
+    0x02, // Collection (Logical)
+    0x85,
+    RID_PID_SET_ENVELOPE_OUT,
+    0x09,
+    0x22, // Effect Block Index
+    0x15,
+    0x01,
+    0x25,
+    0x04,
+    0x75,
+    0x08,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    0x09,
+    0x5B, // Attack Level
+    0x09,
+    0x5D, // Fade Level
+    0x15,
+    0x00,
+    0x26,
+    0xFF,
+    0x7F,
+    0x75,
+    0x10,
+    0x95,
+    0x02,
+    0x91,
+    0x02,
+    0x09,
+    0x5C, // Attack Time
+    0x09,
+    0x5E, // Fade Time
+    0x15,
+    0x00,
+    0x27,
+    0xFF,
+    0x7F,
+    0x00,
+    0x00, // Logical Maximum (32767)
+    0x75,
+    0x10,
+    0x95,
+    0x02,
+    0x91,
+    0x02,
+    0xC0,
+    // -----------------------------
+    // PID Set Condition (Output) - Usage 0x5F
+    // -----------------------------
+    0x05,
+    0x0F,
+    0x09,
+    0x5F, // Usage (Set Condition Report)
+    0xA1,
+    0x02, // Collection (Logical)
+    0x85,
+    RID_PID_SET_CONDITION_OUT,
+    0x09,
+    0x22, // Effect Block Index
+    0x15,
+    0x01,
+    0x25,
+    0x04,
+    0x75,
+    0x08,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    0x09,
+    0x23, // Parameter Block Offset
+    0x15,
+    0x00,
+    0x25,
+    0x03,
+    0x75,
+    0x08,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    0x09,
+    0x60, // CP Offset
+    0x16,
+    0x00,
+    0x80,
+    0x26,
+    0xFF,
+    0x7F,
+    0x75,
+    0x10,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    0x09,
+    0x61, // Positive Coefficient
+    0x09,
+    0x62, // Negative Coefficient
+    0x75,
+    0x10,
+    0x95,
+    0x02,
+    0x91,
+    0x02,
+    0x09,
+    0x63, // Positive Saturation
+    0x09,
+    0x64, // Negative Saturation
+    0x15,
+    0x00,
+    0x26,
+    0xFF,
+    0x7F,
+    0x75,
+    0x10,
+    0x95,
+    0x02,
+    0x91,
+    0x02,
+    0x09,
+    0x65, // Dead Band
+    0x15,
+    0x00,
+    0x26,
+    0xFF,
+    0x7F,
+    0x75,
+    0x10,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    0xC0,
+    // -----------------------------
+    // PID Set Periodic (Output) - Usage 0x6E (stubbed)
+    // -----------------------------
+    0x05,
+    0x0F,
+    0x09,
+    0x6E, // Usage (Set Periodic Report)
+    0xA1,
+    0x02, // Collection (Logical)
+    0x85,
+    RID_PID_SET_PERIODIC_OUT,
+    0x09,
+    0x22, // Effect Block Index
+    0x15,
+    0x01,
+    0x25,
+    0x04,
+    0x75,
+    0x08,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    0x09,
+    0x70, // Magnitude
+    0x16,
+    0x00,
+    0x80,
+    0x26,
+    0xFF,
+    0x7F,
+    0x75,
+    0x10,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    0x09,
+    0x6F, // Offset
+    0x16,
+    0x00,
+    0x80,
+    0x26,
+    0xFF,
+    0x7F,
+    0x75,
+    0x10,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    0x09,
+    0x71, // Phase
+    0x15,
+    0x00,
+    0x27,
+    0x9F,
+    0x8C,
+    0x00,
+    0x00, // Logical Maximum (35999)
+    0x75,
+    0x10,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    0x09,
+    0x72, // Period
+    0x15,
+    0x01,
+    0x27,
+    0xFF,
+    0x7F,
+    0x00,
+    0x00,
+    0x75,
+    0x10,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    0xC0,
+    // ------------------------------------
+    // PID Set Constant Force (Output) - Usage 0x73
+    // ------------------------------------
+    0x05,
+    0x0F,
+    0x09,
+    0x73, // Usage (Set Constant Force Report)
+    0xA1,
+    0x02, // Collection (Logical)
+    0x85,
+    RID_PID_SET_CONSTANT_FORCE_OUT,
+    0x09,
+    0x22, // Effect Block Index
+    0x15,
+    0x01,
+    0x25,
+    0x04,
+    0x75,
+    0x08,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    0x09,
+    0x70, // Magnitude
+    0x16,
+    0x00,
+    0x80,
+    0x26,
+    0xFF,
+    0x7F,
+    0x75,
+    0x10,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    0xC0,
+    // --------------------------------
+    // PID Effect Operation (Output) - Usage 0x77
+    // --------------------------------
+    0x05,
+    0x0F,
+    0x09,
+    0x77,
+    0xA1,
+    0x02,
+    0x85,
+    RID_PID_EFFECT_OPERATION_OUT,
+    0x09,
+    0x22, // Effect Block Index
+    0x15,
+    0x01,
+    0x25,
+    0x04,
+    0x75,
+    0x08,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    // Effect Operation (0x78) must be a "special field" (array) for hid-pidff.
+    0x09,
+    0x78, // Effect Operation
+    0xA1,
+    0x02, // Collection (Logical)
+    0x09,
+    0x79, //   Op Effect Start
+    0x09,
+    0x7A, //   Op Effect Start Solo
+    0x09,
+    0x7B, //   Op Effect Stop
+    0x15,
+    0x01, //   Logical Minimum 1
+    0x25,
+    0x03, //   Logical Maximum 3
+    0x75,
+    0x08, //   Report Size (8)
+    0x95,
+    0x01, //   Report Count (1)
+    0x91,
+    0x00, //   Output (Data,Array,Abs)
+    0xC0, // End Effect Operation collection
+    0x09,
+    0x7C, // Loop Count
+    0x15,
+    0x00,
+    0x26,
+    0xFF,
+    0x00,
+    0x75,
+    0x08,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    0xC0,
+    // -----------------------------
+    // PID Block Free (Output) - Usage 0x90
+    // -----------------------------
+    0x05,
+    0x0F,
+    0x09,
+    0x90,
+    0xA1,
+    0x02,
+    0x85,
+    RID_PID_BLOCK_FREE_OUT,
+    0x09,
+    0x22,
+    0x15,
+    0x01,
+    0x25,
+    0x04,
+    0x75,
+    0x08,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    0xC0,
+    // -----------------------------
+    // PID Device Control (Output) - Usage 0x96
+    // -----------------------------
+    0x05,
+    0x0F,
+    0x09,
+    0x96,
+    0xA1,
+    0x02,
+    0x85,
+    RID_PID_DEVICE_CONTROL_OUT,
+    // Device Control (0x96) must be a "special field" (array) for hid-pidff.
+    0x09,
+    0x96,
+    0xA1,
+    0x02, // Collection (Logical)
+    0x09,
+    0x97, //   DC Enable Actuators
+    0x09,
+    0x98, //   DC Disable Actuators
+    0x09,
+    0x99, //   DC Stop All Effects
+    0x09,
+    0x9A, //   DC Device Reset
+    0x09,
+    0x9B, //   DC Device Pause
+    0x09,
+    0x9C, //   DC Device Continue
+    0x15,
+    0x01, //   Logical Minimum 1
+    0x25,
+    0x06, //   Logical Maximum 6
+    0x75,
+    0x08, //   Report Size (8)
+    0x95,
+    0x01, //   Report Count (1)
+    0x91,
+    0x00, //   Output (Data,Array,Abs)
+    0xC0, // End Device Control collection
+    0xC0, // End Device Control report collection
+    // -----------------------------
+    // PID Device Gain (Output) - Usage 0x7D
+    // -----------------------------
+    0x05,
+    0x0F,
+    0x09,
+    0x7D,
+    0xA1,
+    0x02,
+    0x85,
+    RID_PID_DEVICE_GAIN_OUT,
+    0x09,
+    0x7E,
+    0x15,
+    0x00,
+    0x25,
+    0xFF,
+    0x75,
+    0x08,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    0xC0,
+    // ---------------------------------
+    // PID Create New Effect (Feature) - Usage 0xAB
+    // ---------------------------------
+    0x05,
+    0x0F,
+    0x09,
+    0xAB,
+    0xA1,
+    0x02,
+    0x85,
+    RID_PID_CREATE_NEW_EFFECT_FEATURE,
+    0x09,
+    0x25, // Effect Type
+    0xA1,
+    0x02,
+    0x19,
+    0x26, // Constant Force only
+    0x29,
+    0x26,
+    0x15,
+    0x01,
+    0x25,
+    0x01,
+    0x75,
+    0x08,
+    0x95,
+    0x01,
+    0xB1,
+    0x00, // Feature (Data,Array,Abs)
+    0xC0,
+    // Byte Count (for custom forces; keep for compatibility)
+    0x05,
+    0x01, // Usage Page (Generic Desktop)
+    0x09,
+    0x3B, // Usage (Reserved / Byte count)
+    0x15,
+    0x00,
+    0x26,
+    0xFF,
+    0x01, // Logical Maximum (511)
+    0x75,
+    0x10,
+    0x95,
+    0x01,
+    0xB1,
+    0x02, // Feature (Data,Var,Abs)
+    0xC0,
+    // -----------------------------
+    // PID Block Load (Feature) - Usage 0x89
+    // -----------------------------
+    0x05,
+    0x0F,
+    0x09,
+    0x89,
+    0xA1,
+    0x02,
+    0x85,
+    RID_PID_BLOCK_LOAD_FEATURE,
+    0x09,
+    0x22, // Effect Block Index
+    0x15,
+    0x01,
+    0x25,
+    0x04,
+    0x75,
+    0x08,
+    0x95,
+    0x01,
+    0xB1,
+    0x02, // Feature (Data,Var,Abs)
+    // Block Load Status (0x8B) must be a "special field" (array) for hid-pidff.
+    0x09,
+    0x8B, // Block Load Status
+    0xA1,
+    0x02, // Collection (Logical)
+    0x09,
+    0x8C, //   Block Load Success
+    0x09,
+    0x8D, //   Block Load Full
+    0x09,
+    0x8E, //   Block Load Error
+    0x15,
+    0x01, //   Logical Minimum 1
+    0x25,
+    0x03, //   Logical Maximum 3
+    0x75,
+    0x08, //   Report Size (8)
+    0x95,
+    0x01, //   Report Count (1)
+    0xB1,
+    0x00, //   Feature (Data,Array,Abs)
+    0xC0, // End Block Load Status collection
+    0x09,
+    0xAC, // RAM Pool Available
+    0x15,
+    0x00,
+    0x26,
+    0xFF,
+    0x7F,
+    0x75,
+    0x10,
+    0x95,
+    0x01,
+    0xB1,
+    0x02,
+    0xC0,
+    // -----------------------------
+    // PID Pool (Feature) - Usage 0x7F
+    // -----------------------------
+    0x05,
+    0x0F,
+    0x09,
+    0x7F,
+    0xA1,
+    0x02,
+    0x85,
+    RID_PID_POOL_FEATURE,
+    0x09,
+    0x80, // RAM Pool Size
+    0x15,
+    0x00,
+    0x26,
+    0xFF,
+    0x7F,
+    0x75,
+    0x10,
+    0x95,
+    0x01,
+    0xB1,
+    0x02,
+    0x09,
+    0x83, // Simultaneous Effects Max
+    0x15,
+    0x00,
+    0x25,
+    0xFF,
+    0x75,
+    0x08,
+    0x95,
+    0x01,
+    0xB1,
+    0x02,
+    0x09,
+    0xA9, // Device Managed Pool
+    0x15,
+    0x00,
+    0x25,
+    0x01,
+    0x75,
+    0x08,
+    0x95,
+    0x01,
+    0xB1,
+    0x02,
+    0xC0,
+    // ----------------------------------------------------
+    // PID Set Custom Force Data (Output) - Usage 0x5F (optional)
+    // ----------------------------------------------------
+    0x05,
+    0x0F,
+    0x09,
+    0x68, // Usage (Custom Force Data Report) - optional, treated as opaque
+    0xA1,
+    0x02,
+    0x85,
+    RID_PID_SET_CUSTOM_FORCE_DATA_OUT,
+    0x09,
+    0x22, // Effect Block Index
+    0x15,
+    0x01,
+    0x25,
+    0x04,
+    0x75,
+    0x08,
+    0x95,
+    0x01,
+    0x91,
+    0x02,
+    0x15,
+    0x00,
+    0x25,
+    0xFF,
+    0x75,
+    0x08,
+    0x95,
+    0x10,
+    0x91,
+    0x02,
+    0xC0,
+    0xC0, // End top-level Joystick Collection
+];

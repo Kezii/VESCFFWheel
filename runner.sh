@@ -1,0 +1,1 @@
+exec probe-rs run --chip RP2040 --log-format "[{t:blue}] {f:>10} {L} {s}" "$@"
