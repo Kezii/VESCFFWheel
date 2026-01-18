@@ -15,60 +15,54 @@ pub const CONFIG_DEFAULT_ANGLE_DEG: f32 = 540.0;
 /// - Reads `COMM_ROTOR_POSITION` packets and unwraps the angle to support multiple turns.
 /// - Converts unwrapped position to HID X (`-32767..32767`) using `centerpoint` + `angle_deg`.
 /// - Converts force command to `SetDuty()` proportionally using `gain`.
-pub struct VescWheel<Rx, Tx> {
+pub async fn prepare_vesc<Tx, Rx>(mut tx: Tx, rx: Rx) -> (VescWheelSampler<Rx>, VescWheelSetter<Tx>)
+where
+    Tx: Write,
+    Rx: Read,
+{
+    // Enable continuous encoder-based rotor position streaming.
+    let cmd = VescCommand::SetDisp(DispPosMode::DISP_POS_MODE_ENCODER);
+    let frame = cmd.serialize();
+    if tx.write_all(frame.as_slice()).await.is_err() {
+        warn!("VESC SetDisp write failed");
+    } else {
+        info!("VESC SetDisp(ENCODER) sent");
+    }
+
+    let sampler = VescWheelSampler::new(rx).await;
+    let setter = VescWheelSetter::new(tx).await;
+    (sampler, setter)
+}
+
+pub struct VescWheelSampler<Rx> {
     rx: Rx,
-    tx: Tx,
 
     // state
-    last_force: i16,
     last_x: i16,
-    disable_ffb: bool,
     has_pos: bool,
     old_pos: f32,  // 0..1
     real_pos: f32, // unwrapped, turns (can exceed 0..1)
 }
 
-impl<Rx, Tx> VescWheel<Rx, Tx>
+impl<Rx> VescWheelSampler<Rx>
 where
     Rx: Read,
-    Tx: Write,
 {
-    pub async fn new(mut tx: Tx, rx: Rx) -> Self {
-        // Enable continuous encoder-based rotor position streaming.
-        let cmd = VescCommand::SetDisp(DispPosMode::DISP_POS_MODE_ENCODER);
-        let frame = cmd.serialize();
-        if tx.write_all(frame.as_slice()).await.is_err() {
-            warn!("VESC SetDisp write failed");
-        } else {
-            info!("VESC SetDisp(ENCODER) sent");
-        }
-
+    pub async fn new(rx: Rx) -> Self {
         Self {
             rx,
-            tx,
-            last_force: 0,
             last_x: 0,
-            disable_ffb: false,
             has_pos: false,
             old_pos: 0.0,
             real_pos: 0.0,
         }
     }
 
-    /// Try reading a single 10-byte rotor-position packet without stalling the HID loop.
-    async fn try_read_rotor_position_deg(&mut self) -> Option<f32> {
+    // this is not robust against corruption / packet loss
+    async fn read_rotor_position_deg(&mut self) -> Option<f32> {
         let mut buf = [0u8; 10];
 
-        // If the VESC isn't streaming yet, don't block forever: we just keep the last value.
-        let read_fut = self.rx.read_exact(&mut buf);
-        let timeout_fut = Timer::after_millis(1);
-
-        match select(read_fut, timeout_fut).await {
-            Either::First(r) => {
-                r.ok()?;
-            }
-            Either::Second(_) => return None,
-        }
+        self.rx.read_exact(&mut buf).await.ok()?;
 
         match VescReply::parse_from_buffer(&buf) {
             Some(VescReply::MotorPosition(pos_deg)) => Some(pos_deg),
@@ -134,30 +128,32 @@ where
     }
 
     /// Sample wheel position as HID X (signed 16-bit).
-    pub async fn sample_wheel(&mut self) -> i16 {
-        // Drain a few packets if available, keeping the newest.
-        for _ in 0..4 {
-            let Some(pos_deg) = self.try_read_rotor_position_deg().await else {
-                break;
-            };
+    pub async fn sample_wheel(&mut self) -> Option<i16> {
+        let pos_deg = self.read_rotor_position_deg().await?;
 
-            // VESC returns degrees in [0..360) (typically). Convert to 0..1 turns.
-            let pos_turns = pos_deg / 360.0;
-            let real = self.unwrap_multi_turn(pos_turns);
-            self.last_x = Self::turns_to_hid_x(real);
-        }
+        // VESC returns degrees in [0..360) (typically). Convert to 0..1 turns.
+        let pos_turns = pos_deg / 360.0;
+        let real = self.unwrap_multi_turn(pos_turns);
+        self.last_x = Self::turns_to_hid_x(real);
 
-        self.last_x
+        Some(self.last_x)
+    }
+}
+
+pub struct VescWheelSetter<Tx> {
+    tx: Tx,
+}
+
+impl<Tx> VescWheelSetter<Tx>
+where
+    Tx: Write,
+{
+    pub async fn new(tx: Tx) -> Self {
+        Self { tx }
     }
 
     /// Apply current force/torque command (maps to VESC duty).
     pub async fn set_force(&mut self, force: i16) {
-        self.last_force = force;
-
-        if self.disable_ffb {
-            return;
-        }
-
         let force_norm = (force as f32) / 32767.0;
         let duty = (CONFIG_DEFAULT_GAIN * force_norm).clamp(-1.0, 1.0);
         let cmd = VescCommand::SetDuty(duty);
@@ -166,5 +162,7 @@ where
         if self.tx.write_all(frame.as_slice()).await.is_err() {
             warn!("VESC SetDuty write failed");
         }
+
+        info!("VESC SetDuty duty={}", duty);
     }
 }

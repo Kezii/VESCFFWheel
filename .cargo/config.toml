@@ -7,4 +7,4 @@ runner = "./runner.sh"
 target = "thumbv6m-none-eabi"        # Cortex-M0 and Cortex-M0+
 
 [env]
-DEFMT_LOG = "debug"
+DEFMT_LOG = "warn"

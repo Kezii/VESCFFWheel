@@ -1,11 +1,14 @@
 use defmt::{debug, info, warn};
 
-use crate::descriptor::{
-    RID_PID_BLOCK_FREE_OUT, RID_PID_BLOCK_LOAD_FEATURE, RID_PID_CREATE_NEW_EFFECT_FEATURE,
-    RID_PID_DEVICE_CONTROL_OUT, RID_PID_DEVICE_GAIN_OUT, RID_PID_EFFECT_OPERATION_OUT,
-    RID_PID_POOL_FEATURE, RID_PID_SET_CONDITION_OUT, RID_PID_SET_CONSTANT_FORCE_OUT,
-    RID_PID_SET_CUSTOM_FORCE_DATA_OUT, RID_PID_SET_EFFECT_OUT, RID_PID_SET_ENVELOPE_OUT,
-    RID_PID_SET_PERIODIC_OUT, RID_PID_STATE_IN,
+use crate::{
+    WHEEL_FORCE_SIGNAL,
+    descriptor::{
+        RID_PID_BLOCK_FREE_OUT, RID_PID_BLOCK_LOAD_FEATURE, RID_PID_CREATE_NEW_EFFECT_FEATURE,
+        RID_PID_DEVICE_CONTROL_OUT, RID_PID_DEVICE_GAIN_OUT, RID_PID_EFFECT_OPERATION_OUT,
+        RID_PID_POOL_FEATURE, RID_PID_SET_CONDITION_OUT, RID_PID_SET_CONSTANT_FORCE_OUT,
+        RID_PID_SET_CUSTOM_FORCE_DATA_OUT, RID_PID_SET_EFFECT_OUT, RID_PID_SET_ENVELOPE_OUT,
+        RID_PID_SET_PERIODIC_OUT, RID_PID_STATE_IN,
+    },
 };
 
 #[derive(Clone, Copy)]
@@ -105,14 +108,6 @@ impl<const SLOTS: usize> PidEngine<SLOTS> {
         self.scaled_force(sum_i16)
     }
 
-    fn log_force(&self, magnitude: i16) {
-        let scaled = self.scaled_force(magnitude);
-        info!(
-            "FFB constant magnitude={}, gain={}, scaled={}",
-            magnitude, self.device_gain, scaled
-        );
-    }
-
     fn parse_with_optional_id_prefix(report_id: u8, data: &[u8]) -> &[u8] {
         match data.split_first() {
             Some((&first, rest)) if first == report_id => rest,
@@ -196,12 +191,17 @@ impl<const SLOTS: usize> PidEngine<SLOTS> {
 
                 let block = data[0];
                 let mag = i16::from_le_bytes([data[1], data[2]]);
-                //self.log_force(mag);
 
-                if let Some(i) = Self::block_to_slot(block) {
-                    if let Some(e) = self.effects[i].as_mut() {
-                        e.magnitude = mag;
-                    }
+                info!(
+                    "FFB constant magnitude={}, gain={}, block={}",
+                    mag, self.device_gain, block
+                );
+
+                if let Some(i) = Self::block_to_slot(block)
+                    && let Some(e) = self.effects[i].as_mut()
+                {
+                    e.magnitude = mag;
+                    WHEEL_FORCE_SIGNAL.signal(self.current_force());
                 }
             }
 

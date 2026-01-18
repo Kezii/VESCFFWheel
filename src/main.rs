@@ -6,6 +6,9 @@ mod ffb;
 mod io;
 mod vesc;
 
+use core::sync::atomic::{AtomicI16, Ordering};
+
+use crate::io::wheel::{VescWheelSampler, VescWheelSetter};
 use defmt::{debug, info, warn};
 use embassy_executor::Spawner;
 use embassy_rp::bind_interrupts;
@@ -15,12 +18,14 @@ use embassy_rp::uart::{
 };
 use embassy_rp::usb::{Driver, InterruptHandler};
 use embassy_sync::blocking_mutex::Mutex;
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_time::Timer;
+use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
+use embassy_sync::signal::Signal;
+use embassy_time::{Duration, Ticker, Timer};
 use embassy_usb::class::hid::{HidReader, HidReaderWriter, HidWriter, ReportId, RequestHandler};
 use embassy_usb::control::OutResponse;
 use embassy_usb::{Builder, Config};
 use static_cell::StaticCell;
+
 use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
@@ -84,20 +89,21 @@ async fn hid_out_task(
 async fn hid_in_task(
     mut writer: HidWriter<'static, Driver<'static, USB>, 64>,
     pid: &'static PidMutex,
-    tx: BufferedUartTx,
-    rx: BufferedUartRx,
+    mut wheel: VescWheelSetter<BufferedUartTx>,
 ) -> ! {
     writer.ready().await;
-    let mut wheel = io::wheel::VescWheel::new(tx, rx).await;
     let mut pedals = io::axes::StubPedals::new();
 
+    let mut timer = Ticker::every(Duration::from_millis(1));
     loop {
-        let wheel_x = wheel.sample_wheel().await;
+        let wheel_x = WHEEL_POS.load(Ordering::Relaxed);
         let (accel, brake) = pedals.sample();
 
         // Apply current force from PID engine to the wheel actuator (stubbed here).
-        let force = pid.lock(|p| p.current_force());
-        wheel.set_force(force).await;
+        let force = WHEEL_FORCE_SIGNAL.try_take();
+        if let Some(force) = force {
+            wheel.set_force(force).await;
+        }
 
         // [ReportId][Buttons(1 byte)][X i16][Y u16][Rz u16]
         let mut report = [0u8; 8];
@@ -111,9 +117,22 @@ async fn hid_in_task(
             warn!("HID IN write failed: {:?}", e);
         }
 
-        Timer::after_millis(5).await;
+        timer.next().await;
     }
 }
+
+#[embassy_executor::task]
+async fn wheel_sample_task(mut sampler: VescWheelSampler<BufferedUartRx>) -> ! {
+    loop {
+        let wheel_x = sampler.sample_wheel().await;
+        if let Some(wheel_x) = wheel_x {
+            WHEEL_POS.store(wheel_x, Ordering::Relaxed);
+        }
+    }
+}
+
+pub static WHEEL_FORCE_SIGNAL: Signal<CriticalSectionRawMutex, i16> = Signal::new();
+static WHEEL_POS: AtomicI16 = AtomicI16::new(0);
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -208,9 +227,12 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(usb_task(usb)).unwrap();
     spawner.spawn(hid_out_task(reader, pid)).unwrap();
-    spawner
-        .spawn(hid_in_task(writer, pid, uart_tx, uart_rx))
-        .unwrap();
+
+    let (sampler, setter) = io::wheel::prepare_vesc(uart_tx, uart_rx).await;
+
+    spawner.spawn(hid_in_task(writer, pid, setter)).unwrap();
+
+    spawner.spawn(wheel_sample_task(sampler)).unwrap();
 
     loop {
         Timer::after_secs(5).await;
