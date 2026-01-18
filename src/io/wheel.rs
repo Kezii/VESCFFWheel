@@ -5,6 +5,10 @@ use embedded_io_async::{Read, Write};
 
 use crate::vesc::{DispPosMode, VescCommand, VescReply};
 
+pub const CONFIG_DEFAULT_GAIN: f32 = 0.30;
+pub const CONFIG_DEFAULT_CENTERPOINT: f32 = 145.0 / 360.0;
+pub const CONFIG_DEFAULT_ANGLE_DEG: f32 = 540.0;
+
 /// VESC-backed wheel implementation over UART.
 ///
 /// - Sends `SetDisp(ENCODER)` once on init; after that the VESC streams rotor position packets.
@@ -14,11 +18,6 @@ use crate::vesc::{DispPosMode, VescCommand, VescReply};
 pub struct VescWheel<Rx, Tx> {
     rx: Rx,
     tx: Tx,
-
-    // config (copied from the old userspace project)
-    gain: f32,
-    centerpoint: f32, // 0..1 (turn fraction)
-    angle_deg: f32,   // total wheel angle in degrees (e.g. 540)
 
     // state
     last_force: i16,
@@ -34,18 +33,6 @@ where
     Rx: Read,
     Tx: Write,
 {
-    pub const fn config_default_gain() -> f32 {
-        0.30
-    }
-
-    pub const fn config_default_centerpoint() -> f32 {
-        145.0 / 360.0
-    }
-
-    pub const fn config_default_angle_deg() -> f32 {
-        540.0
-    }
-
     pub async fn new(mut tx: Tx, rx: Rx) -> Self {
         // Enable continuous encoder-based rotor position streaming.
         let cmd = VescCommand::SetDisp(DispPosMode::DISP_POS_MODE_ENCODER);
@@ -59,9 +46,6 @@ where
         Self {
             rx,
             tx,
-            gain: Self::config_default_gain(),
-            centerpoint: Self::config_default_centerpoint(),
-            angle_deg: Self::config_default_angle_deg(),
             last_force: 0,
             last_x: 0,
             disable_ffb: false,
@@ -69,14 +53,6 @@ where
             old_pos: 0.0,
             real_pos: 0.0,
         }
-    }
-
-    /// Update config at runtime.
-    #[allow(dead_code)]
-    pub fn set_calibration(&mut self, gain: f32, centerpoint: f32, angle_deg: f32) {
-        self.gain = gain;
-        self.centerpoint = centerpoint;
-        self.angle_deg = angle_deg;
     }
 
     /// Try reading a single 10-byte rotor-position packet without stalling the HID loop.
@@ -145,14 +121,14 @@ where
         self.real_pos
     }
 
-    fn turns_to_hid_x(&mut self, real_pos_turns: f32) -> i16 {
-        let angle_turns = self.angle_deg / 360.0;
+    fn turns_to_hid_x(real_pos_turns: f32) -> i16 {
+        let angle_turns = CONFIG_DEFAULT_ANGLE_DEG / 360.0;
         if angle_turns <= 0.0 {
             return 0;
         }
 
         // Map unwrapped position to wheel range around centerpoint.
-        let valuef = (real_pos_turns - self.centerpoint) / angle_turns;
+        let valuef = (real_pos_turns - CONFIG_DEFAULT_CENTERPOINT) / angle_turns;
         let x = (valuef * 32767.0) as i32;
         x.clamp(-32767, 32767) as i16
     }
@@ -168,7 +144,7 @@ where
             // VESC returns degrees in [0..360) (typically). Convert to 0..1 turns.
             let pos_turns = pos_deg / 360.0;
             let real = self.unwrap_multi_turn(pos_turns);
-            self.last_x = self.turns_to_hid_x(real);
+            self.last_x = Self::turns_to_hid_x(real);
         }
 
         self.last_x
@@ -183,7 +159,7 @@ where
         }
 
         let force_norm = (force as f32) / 32767.0;
-        let duty = (self.gain * force_norm).clamp(-1.0, 1.0);
+        let duty = (CONFIG_DEFAULT_GAIN * force_norm).clamp(-1.0, 1.0);
         let cmd = VescCommand::SetDuty(duty);
         let frame = cmd.serialize();
 

@@ -1,8 +1,8 @@
 #![no_std]
 #![no_main]
 
+mod descriptor;
 mod ffb;
-mod hid;
 mod io;
 mod vesc;
 
@@ -28,7 +28,7 @@ bind_interrupts!(struct Irqs {
     UART1_IRQ => BufferedInterruptHandler<UART1>;
 });
 
-type Pid = ffb::pid::PidEngine<4>;
+type Pid = ffb::PidEngine<4>;
 type PidMutex = Mutex<NoopRawMutex, Pid>;
 
 // USB descriptor/control buffers must be 'static because the UsbDevice is spawned into tasks.
@@ -101,7 +101,7 @@ async fn hid_in_task(
 
         // [ReportId][Buttons(1 byte)][X i16][Y u16][Rz u16]
         let mut report = [0u8; 8];
-        report[0] = hid::descriptor::RID_AXES_IN;
+        report[0] = descriptor::RID_AXES_IN;
         report[1] = 0x00; // buttons bitmask (Button1..8), stubbed to 0
         report[2..4].copy_from_slice(&wheel_x.to_le_bytes());
         report[4..6].copy_from_slice(&accel.to_le_bytes());
@@ -195,7 +195,7 @@ async fn main(spawner: Spawner) {
     let control_handler = CONTROL_HANDLER.init(ControlHandler { pid });
 
     let hid_config = embassy_usb::class::hid::Config {
-        report_descriptor: hid::descriptor::REPORT_DESCRIPTOR,
+        report_descriptor: descriptor::REPORT_DESCRIPTOR,
         request_handler: Some(control_handler),
         poll_ms: 4,
         max_packet_size: 64,

@@ -1,5 +1,3 @@
-use embassy_time::Instant;
-
 /// Stub pedal axes source (Y and Rz).
 ///
 /// - Accelerator/brake are slow phase-shifted sines mapped to 0..32767.
