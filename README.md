@@ -1,6 +1,6 @@
 # VESCFFWheel
 
-Use an RP2040 for a usb force feedback direct drive steering wheel for racing simulators, supporting multiple turns and everything
+Use an RP2040 to build an usb force feedback direct drive steering wheel for racing simulators, supporting multiple turns and everything
 
 
 ## How to use
