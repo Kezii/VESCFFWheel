@@ -9,7 +9,10 @@ mod vesc;
 use defmt::{debug, info, warn};
 use embassy_executor::Spawner;
 use embassy_rp::bind_interrupts;
-use embassy_rp::peripherals::USB;
+use embassy_rp::peripherals::{UART1, USB};
+use embassy_rp::uart::{
+    BufferedInterruptHandler, BufferedUart, BufferedUartRx, BufferedUartTx, Config as UartConfig,
+};
 use embassy_rp::usb::{Driver, InterruptHandler};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
@@ -22,6 +25,7 @@ use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
+    UART1_IRQ => BufferedInterruptHandler<UART1>;
 });
 
 type Pid = ffb::pid::PidEngine<4>;
@@ -80,13 +84,15 @@ async fn hid_out_task(
 async fn hid_in_task(
     mut writer: HidWriter<'static, Driver<'static, USB>, 64>,
     pid: &'static PidMutex,
+    tx: BufferedUartTx,
+    rx: BufferedUartRx,
 ) -> ! {
     writer.ready().await;
-    let mut wheel = io::wheel::StubWheel::new();
+    let mut wheel = io::wheel::VescWheel::new(tx, rx).await;
     let mut pedals = io::axes::StubPedals::new();
 
     loop {
-        let wheel_x = wheel.sample_wheel();
+        let wheel_x = wheel.sample_wheel().await;
         let (accel, brake) = pedals.sample();
 
         // Apply current force from PID engine to the wheel actuator (stubbed here).
@@ -115,6 +121,25 @@ async fn main(spawner: Spawner) {
 
     let p = embassy_rp::init(Default::default());
     let driver = Driver::new(p.USB, Irqs);
+
+    // UART0 for VESC
+    let (uart_tx_pin, uart_rx_pin, uart) = (p.PIN_4, p.PIN_5, p.UART1);
+    static UART_TX_BUF: StaticCell<[u8; 256]> = StaticCell::new();
+    let uart_tx_buf = &mut UART_TX_BUF.init([0; 256])[..];
+    static UART_RX_BUF: StaticCell<[u8; 256]> = StaticCell::new();
+    let uart_rx_buf = &mut UART_RX_BUF.init([0; 256])[..];
+    let mut uart_cfg = UartConfig::default();
+    uart_cfg.baudrate = 115_200;
+    let uart = BufferedUart::new(
+        uart,
+        uart_tx_pin,
+        uart_rx_pin,
+        Irqs,
+        uart_tx_buf,
+        uart_rx_buf,
+        uart_cfg,
+    );
+    let (uart_tx, uart_rx) = uart.split();
 
     let mut usb_config = Config::new(0xCAFE, 0x4001);
     usb_config.manufacturer = Some("ffwheel");
@@ -183,7 +208,9 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(usb_task(usb)).unwrap();
     spawner.spawn(hid_out_task(reader, pid)).unwrap();
-    spawner.spawn(hid_in_task(writer, pid)).unwrap();
+    spawner
+        .spawn(hid_in_task(writer, pid, uart_tx, uart_rx))
+        .unwrap();
 
     loop {
         Timer::after_secs(5).await;
