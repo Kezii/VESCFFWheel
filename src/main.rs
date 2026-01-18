@@ -4,6 +4,7 @@
 mod ffb;
 mod hid;
 mod io;
+mod vesc;
 
 use defmt::{debug, info, warn};
 use embassy_executor::Spawner;

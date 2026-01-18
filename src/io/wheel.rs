@@ -1,5 +1,5 @@
-use embassy_time::Instant;
 use defmt::info;
+use embassy_time::Instant;
 
 /// Wheel (X axis) I/O.
 ///
