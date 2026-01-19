@@ -1,3 +1,5 @@
+use defmt::warn;
+use embedded_io_async::Read;
 use heapless::Vec;
 
 pub enum VescCommand {
@@ -6,6 +8,7 @@ pub enum VescCommand {
     SetCurrent(f32),
     SetDuty(f32),
     SendPosRequest,
+    GenericCommand(COMM_PACKET_ID),
 }
 
 impl VescCommand {
@@ -39,6 +42,11 @@ impl VescCommand {
                 let mut data = Vec::<u8, 32>::new();
                 data.push(COMM_PACKET_ID::COMM_GET_ROTOR_POSITION as u8)
                     .ok();
+                data
+            }
+            VescCommand::GenericCommand(command) => {
+                let mut data = Vec::<u8, 32>::new();
+                data.push((*command).as_u8()).ok();
                 data
             }
         };
@@ -76,36 +84,77 @@ impl VescCommand {
 #[derive(Debug, defmt::Format)]
 pub enum VescReply {
     MotorPosition(f32),
+    FirmwareVersion(u32),
+    Unknown(Vec<u8, 32>),
 }
 
 impl VescReply {
-    pub fn parse_from_buffer(buffer: &[u8; 10]) -> Option<Self> {
+    // il pacchetto del rotore essere tipo
+    // 2 SIZE [PAYLOAD...] crc crc 3
+
+    pub async fn read_vesc_packet(rx: &mut impl Read) -> Option<Vec<u8, 32>> {
+        let mut buffer = [0u8; 1];
+
+        loop {
+            rx.read_exact(&mut buffer).await.ok()?;
+            if buffer[0] == 2 {
+                break;
+            }
+        } // we don't care about type 3 packet for now
+
+        rx.read_exact(&mut buffer).await.ok()?;
+        let size = buffer[0];
+
+        let mut payload = heapless::Vec::<u8, 32>::new();
+        for _ in 0..size {
+            rx.read_exact(&mut buffer).await.ok()?;
+            payload.push(buffer[0]).ok()?;
+        }
+
+        let mut crc = [0u8; 2];
+        rx.read_exact(&mut crc).await.ok()?;
+        let computed_crc = crc16(&payload);
+        let got_crc = u16::from_be_bytes(crc);
+        if computed_crc != got_crc {
+            warn!(
+                "VESC CRC mismatch: computed={:04x} got={:04x}",
+                computed_crc, got_crc
+            );
+            return None;
+        }
+
+        rx.read_exact(&mut buffer).await.ok()?;
+        if buffer[0] != 3 {
+            warn!("VESC packet end marker mismatch: got={}", buffer[0]);
+            return None;
+        }
+
+        Some(payload)
+    }
+
+    pub async fn eat_vesc_packet(rx: &mut impl Read) -> Option<Self> {
         // il pacchetto del rotore essere tipo
         // 2 5 COMM_ROTOR_POSITION x x x x crc crc 3
 
-        if buffer[0] != 2 {
-            return None;
-        }
-        if buffer[1] != 5 {
-            return None;
-        }
-        if buffer[2] != COMM_PACKET_ID::COMM_ROTOR_POSITION as u8 {
-            return None;
-        }
-        /*if bytes == 10 {
-            //println!("Received: {:?}", buffer);
-        }*/
+        // quindi ci aspettiamo ora un [COMM_ROTOR_POSITION x x x x]
 
-        let rotor_position = (buffer[3] as i32) << 24
-            | (buffer[4] as i32) << 16
-            | (buffer[5] as i32) << 8
-            | buffer[6] as i32;
+        let payload = Self::read_vesc_packet(rx).await?;
 
-        Some(Self::MotorPosition(rotor_position as f32 / 100000.0))
+        match payload.as_slice() {
+            [COMM_ROTOR_POSITION_U8, pos_bytes @ ..] => {
+                let rotor_position = u32::from_be_bytes(pos_bytes.try_into().ok()?);
+
+                return Some(Self::MotorPosition(rotor_position as f32 / 100000.0));
+            }
+            _ => {
+                warn!("VESC packet parse failed: {:?}", payload);
+                return Some(Self::Unknown(payload));
+            }
+        }
     }
 }
 
-fn crc16(buf: &Vec<u8, 32>) -> u16 {
+fn crc16(buf: &[u8]) -> u16 {
     let crc16_tab: &'static [u16] = &[
         0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50a5, 0x60c6, 0x70e7, 0x8108, 0x9129, 0xa14a,
         0xb16b, 0xc18c, 0xd1ad, 0xe1ce, 0xf1ef, 0x1231, 0x0210, 0x3273, 0x2252, 0x52b5, 0x4294,
@@ -142,7 +191,8 @@ fn crc16(buf: &Vec<u8, 32>) -> u16 {
 }
 
 #[repr(u8)]
-enum COMM_PACKET_ID {
+#[derive(Copy, Clone)]
+pub enum COMM_PACKET_ID {
     COMM_FW_VERSION,
     COMM_JUMP_TO_BOOTLOADER,
     COMM_ERASE_NEW_APP,
@@ -236,6 +286,14 @@ enum COMM_PACKET_ID {
     COMM_GET_IMU_CALIBRATION,
     COMM_GET_ROTOR_POSITION,
 }
+
+impl COMM_PACKET_ID {
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
+const COMM_ROTOR_POSITION_U8: u8 = COMM_PACKET_ID::COMM_ROTOR_POSITION.as_u8();
 
 #[repr(u8)]
 #[derive(Copy, Clone)]

@@ -142,7 +142,6 @@ async fn main(spawner: Spawner) {
     let driver = Driver::new(p.USB, Irqs);
 
     // UART0 for VESC
-    let (uart_tx_pin, uart_rx_pin, uart) = (p.PIN_4, p.PIN_5, p.UART1);
     static UART_TX_BUF: StaticCell<[u8; 256]> = StaticCell::new();
     let uart_tx_buf = &mut UART_TX_BUF.init([0; 256])[..];
     static UART_RX_BUF: StaticCell<[u8; 256]> = StaticCell::new();
@@ -150,9 +149,9 @@ async fn main(spawner: Spawner) {
     let mut uart_cfg = UartConfig::default();
     uart_cfg.baudrate = 115_200;
     let uart = BufferedUart::new(
-        uart,
-        uart_tx_pin,
-        uart_rx_pin,
+        p.UART1,
+        p.PIN_4,
+        p.PIN_5,
         Irqs,
         uart_tx_buf,
         uart_rx_buf,

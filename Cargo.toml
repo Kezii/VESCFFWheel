@@ -23,7 +23,7 @@ defmt-rtt = "1.1"
 cortex-m = { version = "0.7.7", features = ["inline-asm"] }
 cortex-m-rt = "0.7.5"
 panic-probe = { version = "1.0", features = ["print-defmt"] }
-heapless = "0.9"
+heapless = { version = "0.9", features = ["defmt"] }
 
 embedded-io-async = { version = "0.6.1", features = ["defmt-03"] }
 

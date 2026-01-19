@@ -1,29 +1,35 @@
 use defmt::{debug, info, warn};
 use embassy_futures::select::{Either, select};
-use embassy_time::Timer;
 use embedded_io_async::{Read, Write};
 
-use crate::vesc::{DispPosMode, VescCommand, VescReply};
+use crate::vesc::{COMM_PACKET_ID, DispPosMode, VescCommand, VescReply};
 
 pub const CONFIG_DEFAULT_GAIN: f32 = 0.30;
 pub const CONFIG_DEFAULT_CENTERPOINT: f32 = 145.0 / 360.0;
 pub const CONFIG_DEFAULT_ANGLE_DEG: f32 = 540.0;
 
-/// VESC-backed wheel implementation over UART.
-///
-/// - Sends `SetDisp(ENCODER)` once on init; after that the VESC streams rotor position packets.
-/// - Reads `COMM_ROTOR_POSITION` packets and unwraps the angle to support multiple turns.
-/// - Converts unwrapped position to HID X (`-32767..32767`) using `centerpoint` + `angle_deg`.
-/// - Converts force command to `SetDuty()` proportionally using `gain`.
 pub async fn prepare_vesc<Tx, Rx>(mut tx: Tx, rx: Rx) -> (VescWheelSampler<Rx>, VescWheelSetter<Tx>)
 where
     Tx: Write,
     Rx: Read,
 {
-    // Enable continuous encoder-based rotor position streaming.
-    let cmd = VescCommand::SetDisp(DispPosMode::DISP_POS_MODE_ENCODER);
-    let frame = cmd.serialize();
-    if tx.write_all(frame.as_slice()).await.is_err() {
+    let cmd = VescCommand::SetDisp(DispPosMode::DISP_POS_MODE_NONE).serialize();
+    if tx.write_all(cmd.as_slice()).await.is_err() {
+        warn!("VESC SetDisp write failed");
+    } else {
+        info!("VESC SetDisp(ENCODER) sent");
+    }
+
+    let cmd = VescCommand::GenericCommand(COMM_PACKET_ID::COMM_FW_VERSION).serialize();
+
+    if tx.write_all(cmd.as_slice()).await.is_err() {
+        warn!("VESC FW Version write failed");
+    } else {
+        info!("VESC FW Version request sent");
+    }
+
+    let cmd = VescCommand::SetDisp(DispPosMode::DISP_POS_MODE_ENCODER).serialize();
+    if tx.write_all(cmd.as_slice()).await.is_err() {
         warn!("VESC SetDisp write failed");
     } else {
         info!("VESC SetDisp(ENCODER) sent");
@@ -60,14 +66,18 @@ where
 
     // this is not robust against corruption / packet loss
     async fn read_rotor_position_deg(&mut self) -> Option<f32> {
-        let mut buf = [0u8; 10];
-
-        self.rx.read_exact(&mut buf).await.ok()?;
-
-        match VescReply::parse_from_buffer(&buf) {
-            Some(VescReply::MotorPosition(pos_deg)) => Some(pos_deg),
+        match VescReply::eat_vesc_packet(&mut self.rx).await {
+            Some(VescReply::MotorPosition(pos)) => Some(pos),
+            Some(VescReply::FirmwareVersion(version)) => {
+                warn!("VESC firmware version: {}", version);
+                None
+            }
+            Some(VescReply::Unknown(payload)) => {
+                warn!("VESC unknown packet: {:?}", payload);
+                None
+            }
             None => {
-                debug!("VESC packet parse failed: {:?}", buf);
+                warn!("VESC packet parse failed");
                 None
             }
         }
@@ -130,6 +140,8 @@ where
     /// Sample wheel position as HID X (signed 16-bit).
     pub async fn sample_wheel(&mut self) -> Option<i16> {
         let pos_deg = self.read_rotor_position_deg().await?;
+
+        debug!("VESC rotor position: {}", pos_deg);
 
         // VESC returns degrees in [0..360) (typically). Convert to 0..1 turns.
         let pos_turns = pos_deg / 360.0;
