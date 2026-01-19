@@ -144,11 +144,11 @@ impl VescReply {
             [COMM_ROTOR_POSITION_U8, pos_bytes @ ..] => {
                 let rotor_position = u32::from_be_bytes(pos_bytes.try_into().ok()?);
 
-                return Some(Self::MotorPosition(rotor_position as f32 / 100000.0));
+                Some(Self::MotorPosition(rotor_position as f32 / 100000.0))
             }
             _ => {
                 warn!("VESC packet parse failed: {:?}", payload);
-                return Some(Self::Unknown(payload));
+                Some(Self::Unknown(payload))
             }
         }
     }
