@@ -6,7 +6,7 @@ mod ffb;
 mod io;
 mod vesc;
 
-use core::sync::atomic::{AtomicI16, Ordering};
+use core::sync::atomic::{AtomicI16, AtomicU16, Ordering};
 
 use crate::io::wheel::{VescWheelSampler, VescWheelSetter};
 use defmt::{debug, info, warn};
@@ -19,6 +19,7 @@ use embassy_rp::uart::{
 use embassy_rp::usb::{Driver, InterruptHandler};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
+use embassy_sync::lazy_lock::LazyLock;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Ticker, Timer};
 use embassy_usb::class::hid::{HidReader, HidReaderWriter, HidWriter, ReportId, RequestHandler};
@@ -51,9 +52,11 @@ async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, Driver<'static, USB>>
 async fn hid_out_task(
     mut reader: HidReader<'static, Driver<'static, USB>, 64>,
     pid: &'static PidMutex,
+    perf_counter: &'static PerfCounter,
 ) -> ! {
     struct OutHandler {
         pid: &'static PidMutex,
+        perf_counter: &'static PerfCounter,
     }
 
     impl RequestHandler for OutHandler {
@@ -62,7 +65,8 @@ async fn hid_out_task(
                 ReportId::Out(rid) | ReportId::Feature(rid) => {
                     debug!("HID SET_REPORT rid=0x{:02x} len={}", rid, data.len());
                     unsafe {
-                        self.pid.lock_mut(|p| p.handle_report_out(rid, data));
+                        self.pid
+                            .lock_mut(|p| p.handle_report_out(rid, data, self.perf_counter));
                     }
                     OutResponse::Accepted
                 }
@@ -80,7 +84,7 @@ async fn hid_out_task(
     }
 
     reader.ready().await;
-    let mut handler = OutHandler { pid };
+    let mut handler = OutHandler { pid, perf_counter };
     // Use report IDs: first byte of the OUT report is Report ID.
     reader.run(true, &mut handler).await
 }
@@ -88,22 +92,17 @@ async fn hid_out_task(
 #[embassy_executor::task]
 async fn hid_in_task(
     mut writer: HidWriter<'static, Driver<'static, USB>, 64>,
-    pid: &'static PidMutex,
-    mut wheel: VescWheelSetter<BufferedUartTx>,
+    perf_counter: &'static PerfCounter,
 ) -> ! {
     writer.ready().await;
     let mut pedals = io::axes::StubPedals::new();
 
-    let mut timer = Ticker::every(Duration::from_millis(1));
     loop {
-        let wheel_x = WHEEL_POS.load(Ordering::Relaxed);
-        let (accel, brake) = pedals.sample();
+        let wheel_x = WHEEL_POS_SIGNAL.wait().await;
 
-        // Apply current force from PID engine to the wheel actuator (stubbed here).
-        let force = WHEEL_FORCE_SIGNAL.try_take();
-        if let Some(force) = force {
-            wheel.set_force(force).await;
-        }
+        perf_counter.increment_hid_write();
+
+        let (accel, brake) = pedals.sample();
 
         // [ReportId][Buttons(1 byte)][X i16][Y u16][Rz u16]
         let mut report = [0u8; 8];
@@ -116,23 +115,90 @@ async fn hid_in_task(
         if let Err(e) = writer.write(&report).await {
             warn!("HID IN write failed: {:?}", e);
         }
-
-        timer.next().await;
     }
 }
 
 #[embassy_executor::task]
-async fn wheel_sample_task(mut sampler: VescWheelSampler<BufferedUartRx>) -> ! {
+async fn wheel_sample_task(
+    mut sampler: VescWheelSampler<BufferedUartRx>,
+    perf_counter: &'static PerfCounter,
+) -> ! {
     loop {
         let wheel_x = sampler.sample_wheel().await;
         if let Some(wheel_x) = wheel_x {
-            WHEEL_POS.store(wheel_x, Ordering::Relaxed);
+            WHEEL_POS_SIGNAL.signal(wheel_x);
+            perf_counter.increment_vesc_read();
         }
     }
 }
 
+#[embassy_executor::task]
+async fn wheel_apply_force_task(
+    mut wheel: VescWheelSetter<BufferedUartTx>,
+    perf_counter: &'static PerfCounter,
+) -> ! {
+    loop {
+        let force = WHEEL_FORCE_SIGNAL.wait().await;
+        wheel.set_force(force).await;
+        perf_counter.increment_vesc_write();
+    }
+}
+
 pub static WHEEL_FORCE_SIGNAL: Signal<CriticalSectionRawMutex, i16> = Signal::new();
-static WHEEL_POS: AtomicI16 = AtomicI16::new(0);
+static WHEEL_POS_SIGNAL: Signal<CriticalSectionRawMutex, i16> = Signal::new();
+
+#[derive(Default)]
+pub struct PerfCounter {
+    n_hid_writes: AtomicU16,
+    n_hid_reads: AtomicU16,
+    n_vesc_reads: AtomicU16,
+    n_vesc_writes: AtomicU16,
+}
+
+impl PerfCounter {
+    pub fn increment_hid_write(&self) {
+        self.n_hid_writes.store(
+            self.n_hid_writes.load(Ordering::Relaxed) + 1,
+            Ordering::Relaxed,
+        );
+    }
+
+    pub fn increment_hid_read(&self) {
+        self.n_hid_reads.store(
+            self.n_hid_reads.load(Ordering::Relaxed) + 1,
+            Ordering::Relaxed,
+        );
+    }
+
+    pub fn increment_vesc_read(&self) {
+        self.n_vesc_reads.store(
+            self.n_vesc_reads.load(Ordering::Relaxed) + 1,
+            Ordering::Relaxed,
+        );
+    }
+
+    pub fn increment_vesc_write(&self) {
+        self.n_vesc_writes.store(
+            self.n_vesc_writes.load(Ordering::Relaxed) + 1,
+            Ordering::Relaxed,
+        );
+    }
+
+    pub fn log_performance(&self) {
+        let vesc_reads = self.n_vesc_reads.load(Ordering::Relaxed);
+        let vesc_writes = self.n_vesc_writes.load(Ordering::Relaxed);
+        let hid_reads = self.n_hid_reads.load(Ordering::Relaxed);
+        let hid_writes = self.n_hid_writes.load(Ordering::Relaxed);
+        info!(
+            "PERF vesc_reads={:03} -> hid_writes={:03} ;  hid_reads={:03} -> vesc_writes={:03}",
+            vesc_reads, hid_writes, hid_reads, vesc_writes
+        );
+        self.n_hid_writes.store(0, Ordering::Relaxed);
+        self.n_hid_reads.store(0, Ordering::Relaxed);
+        self.n_vesc_reads.store(0, Ordering::Relaxed);
+        self.n_vesc_writes.store(0, Ordering::Relaxed);
+    }
+}
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -189,6 +255,7 @@ async fn main(spawner: Spawner) {
     // The HID class will also handle control GET_REPORT/SET_REPORT via this request handler.
     struct ControlHandler {
         pid: &'static PidMutex,
+        perf_counter: &'static PerfCounter,
     }
     impl RequestHandler for ControlHandler {
         fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
@@ -201,7 +268,10 @@ async fn main(spawner: Spawner) {
         fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
             match id {
                 ReportId::Out(rid) | ReportId::Feature(rid) => {
-                    unsafe { self.pid.lock_mut(|p| p.handle_report_out(rid, data)) };
+                    unsafe {
+                        self.pid
+                            .lock_mut(|p| p.handle_report_out(rid, data, self.perf_counter))
+                    };
                     OutResponse::Accepted
                 }
                 _ => OutResponse::Rejected,
@@ -209,8 +279,12 @@ async fn main(spawner: Spawner) {
         }
     }
 
+    static PERF_COUNTER: StaticCell<PerfCounter> = StaticCell::new();
+    let perf_counter = PERF_COUNTER.init(PerfCounter::default());
+    let perf_counter = &*perf_counter;
+
     static CONTROL_HANDLER: StaticCell<ControlHandler> = StaticCell::new();
-    let control_handler = CONTROL_HANDLER.init(ControlHandler { pid });
+    let control_handler = CONTROL_HANDLER.init(ControlHandler { pid, perf_counter });
 
     let hid_config = embassy_usb::class::hid::Config {
         report_descriptor: descriptor::REPORT_DESCRIPTOR,
@@ -225,17 +299,23 @@ async fn main(spawner: Spawner) {
     let usb = builder.build();
 
     spawner.spawn(usb_task(usb)).unwrap();
-    spawner.spawn(hid_out_task(reader, pid)).unwrap();
+    spawner
+        .spawn(hid_out_task(reader, pid, perf_counter))
+        .unwrap();
 
     let (sampler, setter) = io::wheel::prepare_vesc(uart_tx, uart_rx).await;
 
-    spawner.spawn(hid_in_task(writer, pid, setter)).unwrap();
+    spawner.spawn(hid_in_task(writer, perf_counter)).unwrap();
+    spawner
+        .spawn(wheel_apply_force_task(setter, perf_counter))
+        .unwrap();
 
-    spawner.spawn(wheel_sample_task(sampler)).unwrap();
+    spawner
+        .spawn(wheel_sample_task(sampler, perf_counter))
+        .unwrap();
 
     loop {
-        Timer::after_secs(5).await;
-        //let (gain, enabled, paused) = pid.lock(|p| (p.device_gain, p.actuators_enabled, p.paused));
-        //debug!("alive gain={} enabled={} paused={}", gain, enabled, paused);
+        Timer::after_secs(1).await;
+        perf_counter.log_performance();
     }
 }

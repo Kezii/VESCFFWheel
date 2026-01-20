@@ -1,7 +1,7 @@
 use defmt::{debug, info, warn};
 
 use crate::{
-    WHEEL_FORCE_SIGNAL,
+    PerfCounter, WHEEL_FORCE_SIGNAL,
     descriptor::{
         RID_PID_BLOCK_FREE_OUT, RID_PID_BLOCK_LOAD_FEATURE, RID_PID_CREATE_NEW_EFFECT_FEATURE,
         RID_PID_DEVICE_CONTROL_OUT, RID_PID_DEVICE_GAIN_OUT, RID_PID_EFFECT_OPERATION_OUT,
@@ -115,7 +115,12 @@ impl<const SLOTS: usize> PidEngine<SLOTS> {
         }
     }
 
-    pub fn handle_report_out(&mut self, report_id: u8, data: &[u8]) {
+    pub fn handle_report_out(
+        &mut self,
+        report_id: u8,
+        data: &[u8],
+        perf_counter: &'static PerfCounter,
+    ) {
         match report_id {
             RID_PID_CREATE_NEW_EFFECT_FEATURE => {
                 // Data is Effect Type selection (we only support Constant Force)
@@ -192,7 +197,7 @@ impl<const SLOTS: usize> PidEngine<SLOTS> {
                 let block = data[0];
                 let mag = i16::from_le_bytes([data[1], data[2]]);
 
-                info!(
+                debug!(
                     "FFB constant magnitude={}, gain={}, block={}",
                     mag, self.device_gain, block
                 );
@@ -202,6 +207,7 @@ impl<const SLOTS: usize> PidEngine<SLOTS> {
                 {
                     e.magnitude = mag;
                     WHEEL_FORCE_SIGNAL.signal(self.current_force());
+                    perf_counter.increment_hid_read();
                 }
             }
 

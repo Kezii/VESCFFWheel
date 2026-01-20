@@ -8,26 +8,14 @@ pub const CONFIG_DEFAULT_GAIN: f32 = 0.30;
 pub const CONFIG_DEFAULT_CENTERPOINT: f32 = 145.0 / 360.0;
 pub const CONFIG_DEFAULT_ANGLE_DEG: f32 = 540.0;
 
-pub async fn prepare_vesc<Tx, Rx>(mut tx: Tx, rx: Rx) -> (VescWheelSampler<Rx>, VescWheelSetter<Tx>)
+pub async fn prepare_vesc<Tx, Rx>(
+    mut tx: Tx,
+    mut rx: Rx,
+) -> (VescWheelSampler<Rx>, VescWheelSetter<Tx>)
 where
     Tx: Write,
     Rx: Read,
 {
-    let cmd = VescCommand::SetDisp(DispPosMode::DISP_POS_MODE_NONE).serialize();
-    if tx.write_all(cmd.as_slice()).await.is_err() {
-        warn!("VESC SetDisp write failed");
-    } else {
-        info!("VESC SetDisp(ENCODER) sent");
-    }
-
-    let cmd = VescCommand::GenericCommand(COMM_PACKET_ID::COMM_FW_VERSION).serialize();
-
-    if tx.write_all(cmd.as_slice()).await.is_err() {
-        warn!("VESC FW Version write failed");
-    } else {
-        info!("VESC FW Version request sent");
-    }
-
     let cmd = VescCommand::SetDisp(DispPosMode::DISP_POS_MODE_ENCODER).serialize();
     if tx.write_all(cmd.as_slice()).await.is_err() {
         warn!("VESC SetDisp write failed");
@@ -175,6 +163,6 @@ where
             warn!("VESC SetDuty write failed");
         }
 
-        info!("VESC SetDuty duty={}", duty);
+        debug!("VESC SetDuty duty={}", duty);
     }
 }
