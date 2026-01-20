@@ -18,7 +18,7 @@ use embassy_rp::uart::{
 };
 use embassy_rp::usb::{Driver, InterruptHandler};
 use embassy_sync::blocking_mutex::Mutex;
-use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Timer;
 use embassy_usb::class::hid::{HidReader, HidReaderWriter, HidWriter, ReportId, RequestHandler};
@@ -34,7 +34,7 @@ bind_interrupts!(struct Irqs {
 });
 
 type Pid = ffb::PidEngine<4>;
-type PidMutex = Mutex<NoopRawMutex, Pid>;
+type PidMutex = Mutex<CriticalSectionRawMutex, Pid>;
 
 // USB descriptor/control buffers must be 'static because the UsbDevice is spawned into tasks.
 static CONFIG_DESCRIPTOR: StaticCell<[u8; 512]> = StaticCell::new();
@@ -53,37 +53,8 @@ async fn hid_out_task(
     pid: &'static PidMutex,
     perf_counter: &'static PerfCounter,
 ) -> ! {
-    struct OutHandler {
-        pid: &'static PidMutex,
-        perf_counter: &'static PerfCounter,
-    }
-
-    impl RequestHandler for OutHandler {
-        fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
-            match id {
-                ReportId::Out(rid) | ReportId::Feature(rid) => {
-                    debug!("HID SET_REPORT rid=0x{:02x} len={}", rid, data.len());
-                    unsafe {
-                        self.pid
-                            .lock_mut(|p| p.handle_report_out(rid, data, self.perf_counter));
-                    }
-                    OutResponse::Accepted
-                }
-                _ => OutResponse::Rejected,
-            }
-        }
-
-        fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
-            match id {
-                ReportId::Feature(rid) => self.pid.lock(|p| p.get_feature_report(rid, buf)),
-                ReportId::In(rid) => self.pid.lock(|p| p.get_input_report(rid, buf)),
-                _ => None,
-            }
-        }
-    }
-
     reader.ready().await;
-    let mut handler = OutHandler { pid, perf_counter };
+    let mut handler = PidHandler { pid, perf_counter };
     // Use report IDs: first byte of the OUT report is Report ID.
     reader.run(true, &mut handler).await
 }
@@ -146,6 +117,37 @@ async fn wheel_apply_force_task(
 pub static WHEEL_FORCE_SIGNAL: Signal<CriticalSectionRawMutex, i16> = Signal::new();
 static WHEEL_POS_SIGNAL: Signal<CriticalSectionRawMutex, i16> = Signal::new();
 
+/// Single handler for both control and interrupt OUT paths.
+struct PidHandler {
+    pid: &'static PidMutex,
+    perf_counter: &'static PerfCounter,
+}
+
+impl RequestHandler for PidHandler {
+    fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
+        match id {
+            ReportId::Out(rid) | ReportId::Feature(rid) => {
+                debug!("HID SET_REPORT rid=0x{:02x} len={}", rid, data.len());
+
+                unsafe {
+                    self.pid
+                        .lock_mut(|p| p.handle_report_out(rid, data, self.perf_counter));
+                }
+                OutResponse::Accepted
+            }
+            _ => OutResponse::Rejected,
+        }
+    }
+
+    fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
+        match id {
+            ReportId::Feature(rid) => self.pid.lock(|p| p.get_feature_report(rid, buf)),
+            ReportId::In(rid) => self.pid.lock(|p| p.get_input_report(rid, buf)),
+            _ => None,
+        }
+    }
+}
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     info!("ffwheel HID starting");
@@ -198,39 +200,12 @@ async fn main(spawner: Spawner) {
     static PID: StaticCell<PidMutex> = StaticCell::new();
     let pid = PID.init(PidMutex::new(Pid::new()));
 
-    // The HID class will also handle control GET_REPORT/SET_REPORT via this request handler.
-    struct ControlHandler {
-        pid: &'static PidMutex,
-        perf_counter: &'static PerfCounter,
-    }
-    impl RequestHandler for ControlHandler {
-        fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
-            match id {
-                ReportId::Feature(rid) => self.pid.lock(|p| p.get_feature_report(rid, buf)),
-                ReportId::In(rid) => self.pid.lock(|p| p.get_input_report(rid, buf)),
-                _ => None,
-            }
-        }
-        fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
-            match id {
-                ReportId::Out(rid) | ReportId::Feature(rid) => {
-                    unsafe {
-                        self.pid
-                            .lock_mut(|p| p.handle_report_out(rid, data, self.perf_counter))
-                    };
-                    OutResponse::Accepted
-                }
-                _ => OutResponse::Rejected,
-            }
-        }
-    }
-
     static PERF_COUNTER: StaticCell<PerfCounter> = StaticCell::new();
     let perf_counter = PERF_COUNTER.init(PerfCounter::default());
     let perf_counter = &*perf_counter;
 
-    static CONTROL_HANDLER: StaticCell<ControlHandler> = StaticCell::new();
-    let control_handler = CONTROL_HANDLER.init(ControlHandler { pid, perf_counter });
+    static CONTROL_HANDLER: StaticCell<PidHandler> = StaticCell::new();
+    let control_handler = CONTROL_HANDLER.init(PidHandler { pid, perf_counter });
 
     let hid_config = embassy_usb::class::hid::Config {
         report_descriptor: descriptor::REPORT_DESCRIPTOR,

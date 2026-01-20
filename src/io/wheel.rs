@@ -19,8 +19,8 @@ where
         info!("VESC SetDisp(ENCODER) sent");
     }
 
-    let sampler = VescWheelSampler::new(rx).await;
-    let setter = VescWheelSetter::new(tx).await;
+    let sampler = VescWheelSampler::new(rx);
+    let setter = VescWheelSetter::new(tx);
     (sampler, setter)
 }
 
@@ -38,7 +38,7 @@ impl<Rx> VescWheelSampler<Rx>
 where
     Rx: Read,
 {
-    pub async fn new(rx: Rx) -> Self {
+    pub fn new(rx: Rx) -> Self {
         Self {
             rx,
             last_x: 0,
@@ -143,7 +143,7 @@ impl<Tx> VescWheelSetter<Tx>
 where
     Tx: Write,
 {
-    pub async fn new(tx: Tx) -> Self {
+    pub fn new(tx: Tx) -> Self {
         Self { tx }
     }
 

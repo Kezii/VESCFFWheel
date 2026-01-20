@@ -29,9 +29,46 @@ embedded-io-async = { version = "0.6.1", features = ["defmt-03"] }
 
 static_cell = "2"
 portable-atomic = { version = "1.13", features = ["critical-section"] }
+crc = "3.4.0"
 
-[profile.release]
+
+# cargo build/run
+[profile.dev]
+codegen-units = 1
 debug = 2
+debug-assertions = true # <-
+incremental = false
+opt-level = "s" # <-
+overflow-checks = true # <-
+
+# cargo test
+[profile.test]
+codegen-units = 1
+debug = 2
+debug-assertions = true # <-
+incremental = false
+opt-level = "s" # <-
+overflow-checks = true # <-
+
+# cargo build/run --release
+[profile.release]
+codegen-units = 1
+debug = 2
+debug-assertions = false # <-
+incremental = false
+lto = 'fat'
+opt-level = "s" # <-
+overflow-checks = false # <-
+
+# cargo test --release
+[profile.bench]
+codegen-units = 1
+debug = 2
+debug-assertions = false # <-
+incremental = false
+lto = 'fat'
+opt-level = "s" # <-
+overflow-checks = false # <-
 
 # Below configs are here to mute the rust-analyzer error.
 # "Can't find crate for 'test'" as this is a no_std project

@@ -79,7 +79,7 @@ impl<const SLOTS: usize> PidEngine<SLOTS> {
     fn any_playing(&self) -> bool {
         self.effects
             .iter()
-            .any(|e| e.map(|x| x.playing).unwrap_or(false))
+            .any(|e| matches!(e, Some(x) if x.playing))
     }
 
     fn scaled_force(&self, magnitude: i16) -> i16 {
