@@ -60,6 +60,17 @@ impl<const SLOTS: usize> PidEngine<SLOTS> {
         (idx < SLOTS).then_some(idx)
     }
 
+    fn effect_mut(&mut self, block: u8) -> Option<&mut ConstantEffect> {
+        let i = Self::block_to_slot(block)?;
+        self.effects.get_mut(i)?.as_mut()
+    }
+
+    fn stop_all_effects(&mut self) {
+        for e in self.effects.iter_mut().flatten() {
+            e.playing = false;
+        }
+    }
+
     fn alloc_slot(&mut self) -> Result<u8, ()> {
         for (i, e) in self.effects.iter_mut().enumerate() {
             if e.is_none() {
@@ -121,10 +132,13 @@ impl<const SLOTS: usize> PidEngine<SLOTS> {
         data: &[u8],
         perf_counter: &'static PerfCounter,
     ) {
+        // Some hosts (Linux included) include the Report ID byte in control SET_REPORT transfers.
+        // For interrupt OUT, report_id is already provided separately; strip any redundant prefix.
+        let data = Self::parse_with_optional_id_prefix(report_id, data);
+
         match report_id {
             RID_PID_CREATE_NEW_EFFECT_FEATURE => {
                 // Data is Effect Type selection (we only support Constant Force)
-                let data = Self::parse_with_optional_id_prefix(report_id, data);
                 let _effect_type_sel = data.first().copied().unwrap_or(1);
 
                 match self.alloc_slot() {
@@ -144,7 +158,6 @@ impl<const SLOTS: usize> PidEngine<SLOTS> {
             }
 
             RID_PID_BLOCK_FREE_OUT => {
-                let data = Self::parse_with_optional_id_prefix(report_id, data);
                 let block = data.first().copied().unwrap_or(0);
                 self.free_slot(block);
                 info!("PID BlockFree block={}", block);
@@ -152,13 +165,11 @@ impl<const SLOTS: usize> PidEngine<SLOTS> {
 
             RID_PID_SET_EFFECT_OUT => {
                 // We only need the Effect Block Index for routing; other fields ignored for now.
-                let data = Self::parse_with_optional_id_prefix(report_id, data);
                 let block = data.first().copied().unwrap_or(0);
                 debug!("PID SetEffect block={}", block);
             }
 
             RID_PID_SET_ENVELOPE_OUT => {
-                let data = Self::parse_with_optional_id_prefix(report_id, data);
                 let block = data.first().copied().unwrap_or(0);
                 debug!(
                     "PID SetEnvelope (ignored) block={} len={}",
@@ -168,7 +179,6 @@ impl<const SLOTS: usize> PidEngine<SLOTS> {
             }
 
             RID_PID_SET_CONDITION_OUT => {
-                let data = Self::parse_with_optional_id_prefix(report_id, data);
                 let block = data.first().copied().unwrap_or(0);
                 debug!(
                     "PID SetCondition (ignored) block={} len={}",
@@ -178,7 +188,6 @@ impl<const SLOTS: usize> PidEngine<SLOTS> {
             }
 
             RID_PID_SET_PERIODIC_OUT => {
-                let data = Self::parse_with_optional_id_prefix(report_id, data);
                 let block = data.first().copied().unwrap_or(0);
                 debug!(
                     "PID SetPeriodic (ignored) block={} len={}",
@@ -188,7 +197,6 @@ impl<const SLOTS: usize> PidEngine<SLOTS> {
             }
 
             RID_PID_SET_CONSTANT_FORCE_OUT => {
-                let data = Self::parse_with_optional_id_prefix(report_id, data);
                 if data.len() < 3 {
                     warn!("PID SetConstantForce short report: {} bytes", data.len());
                     return;
@@ -202,9 +210,7 @@ impl<const SLOTS: usize> PidEngine<SLOTS> {
                     mag, self.device_gain, block
                 );
 
-                if let Some(i) = Self::block_to_slot(block)
-                    && let Some(e) = self.effects[i].as_mut()
-                {
+                if let Some(e) = self.effect_mut(block) {
                     e.magnitude = mag;
                     WHEEL_FORCE_SIGNAL.signal(self.current_force());
                     perf_counter.increment_hid_read();
@@ -212,7 +218,6 @@ impl<const SLOTS: usize> PidEngine<SLOTS> {
             }
 
             RID_PID_EFFECT_OPERATION_OUT => {
-                let data = Self::parse_with_optional_id_prefix(report_id, data);
                 if data.len() < 3 {
                     warn!("PID EffectOperation short report: {} bytes", data.len());
                     return;
@@ -222,87 +227,78 @@ impl<const SLOTS: usize> PidEngine<SLOTS> {
                 // In hid-pidff this is an ARRAY field (0x78): 1=Start, 2=StartSolo, 3=Stop.
                 let op_sel = data[1];
                 let _loop_count = data[2];
-                let start = op_sel == 1;
-                let start_solo = op_sel == 2;
-                let stop = op_sel == 3;
 
-                if stop {
-                    if let Some(i) = Self::block_to_slot(block) {
-                        if let Some(e) = self.effects[i].as_mut() {
+                match op_sel {
+                    3 => {
+                        if let Some(e) = self.effect_mut(block) {
                             e.playing = false;
                         }
+                        info!("PID EffectOperation STOP block={}", block);
                     }
-                    info!("PID EffectOperation STOP block={}", block);
-                } else if start || start_solo {
-                    if start_solo {
-                        for e in self.effects.iter_mut().flatten() {
-                            e.playing = false;
+                    1 | 2 => {
+                        let start_solo = op_sel == 2;
+                        if start_solo {
+                            self.stop_all_effects();
                         }
-                    }
-                    if let Some(i) = Self::block_to_slot(block) {
-                        if let Some(e) = self.effects[i].as_mut() {
+                        if let Some(e) = self.effect_mut(block) {
                             e.playing = true;
-                            info!(
-                                "PID EffectOperation START block={} solo={}",
-                                block, start_solo
-                            );
                         }
+                        info!(
+                            "PID EffectOperation START block={} solo={}",
+                            block, start_solo
+                        );
+                    }
+                    _ => {
+                        warn!(
+                            "PID EffectOperation unknown op_sel={} block={}",
+                            op_sel, block
+                        );
                     }
                 }
             }
 
             RID_PID_DEVICE_GAIN_OUT => {
-                let data = Self::parse_with_optional_id_prefix(report_id, data);
                 let gain = data.first().copied().unwrap_or(0xFF);
                 self.device_gain = gain;
                 info!("PID DeviceGain gain={}", gain);
             }
 
             RID_PID_DEVICE_CONTROL_OUT => {
-                let data = Self::parse_with_optional_id_prefix(report_id, data);
                 // In hid-pidff this is an ARRAY field (0x96): 1..6 selects the command.
                 let cmd = data.first().copied().unwrap_or(0);
-                let enable = cmd == 1;
-                let disable = cmd == 2;
-                let stop_all = cmd == 3;
-                let reset = cmd == 4;
-                let pause = cmd == 5;
-                let cont = cmd == 6;
-
-                if reset {
-                    *self = Self::new();
-                    info!("PID DeviceControl RESET");
-                    return;
-                }
-                if enable {
-                    self.actuators_enabled = true;
-                    info!("PID DeviceControl ENABLE_ACTUATORS");
-                }
-                if disable {
-                    self.actuators_enabled = false;
-                    info!("PID DeviceControl DISABLE_ACTUATORS");
-                }
-                if stop_all {
-                    for e in self.effects.iter_mut().flatten() {
-                        e.playing = false;
+                match cmd {
+                    1 => {
+                        self.actuators_enabled = true;
+                        info!("PID DeviceControl ENABLE_ACTUATORS");
                     }
-                    info!("PID DeviceControl STOP_ALL_EFFECTS");
-                }
-                if pause {
-                    self.paused = true;
-                    info!("PID DeviceControl PAUSE");
-                }
-                if cont {
-                    self.paused = false;
-                    info!("PID DeviceControl CONTINUE");
+                    2 => {
+                        self.actuators_enabled = false;
+                        info!("PID DeviceControl DISABLE_ACTUATORS");
+                    }
+                    3 => {
+                        self.stop_all_effects();
+                        info!("PID DeviceControl STOP_ALL_EFFECTS");
+                    }
+                    4 => {
+                        *self = Self::new();
+                        info!("PID DeviceControl RESET");
+                    }
+                    5 => {
+                        self.paused = true;
+                        info!("PID DeviceControl PAUSE");
+                    }
+                    6 => {
+                        self.paused = false;
+                        info!("PID DeviceControl CONTINUE");
+                    }
+                    _ => debug!("PID DeviceControl unknown cmd={}", cmd),
                 }
             }
 
             RID_PID_SET_CUSTOM_FORCE_DATA_OUT => {
                 // Optional report; ignore payload (custom forces not implemented).
-                let data = Self::parse_with_optional_id_prefix(report_id, data);
                 let block = data.first().copied().unwrap_or(0);
-                debug!(
+                warn!(
                     "PID SetCustomForceData (ignored) block={}, len={}",
                     block,
                     data.len()
@@ -310,7 +306,7 @@ impl<const SLOTS: usize> PidEngine<SLOTS> {
             }
 
             _ => {
-                debug!(
+                warn!(
                     "Unhandled OUT report id=0x{:02x}, len={}",
                     report_id,
                     data.len()

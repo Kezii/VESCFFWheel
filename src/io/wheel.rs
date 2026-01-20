@@ -77,17 +77,19 @@ where
 
         let pos = pos_turns_0_1;
         let old = self.old_pos;
+        let delta = pos - old;
 
-        if (pos - old).abs() > 0.5 {
-            if pos > 0.5 && old < 0.5 {
-                // crossed wrap boundary
+        if delta.abs() > 0.5 {
+            // Crossing the wrap boundary (0/1). The sign of delta tells us which way.
+            if delta > 0.0 {
+                // old ~ 0.0, pos ~ 1.0 (wrapped backwards)
                 self.real_pos -= old + (1.0 - pos);
-            }
-            if pos < 0.5 && old > 0.5 {
+            } else {
+                // old ~ 1.0, pos ~ 0.0 (wrapped forwards)
                 self.real_pos += pos + (1.0 - old);
             }
         } else {
-            self.real_pos += pos - old;
+            self.real_pos += delta;
         }
 
         // If we are in the central range, re-lock to the absolute position to avoid drift.

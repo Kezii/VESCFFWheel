@@ -53,12 +53,12 @@ impl VescCommand {
             }
         };
 
-        Self::create_vesc_command(payload)
+        Self::create_vesc_command(&payload)
     }
 
-    fn create_vesc_command(payload: Vec<u8, 32>) -> Vec<u8, 32> {
+    fn create_vesc_command(payload: &[u8]) -> Vec<u8, 32> {
         let mut digest = VESC_CRC.digest();
-        digest.update(&payload);
+        digest.update(payload);
         let crc = digest.finalize();
 
         let mut data = Vec::<u8, 32>::new();
@@ -74,7 +74,7 @@ impl VescCommand {
             data.push((packet_length & 0xFF) as u8).ok();
         }
 
-        data.extend_from_slice(&payload).ok();
+        data.extend_from_slice(payload).ok();
 
         data.push((crc >> 8) as u8).ok();
         data.push(crc as u8).ok();
@@ -97,23 +97,25 @@ impl VescReply {
     // 2 SIZE [PAYLOAD...] crc crc 3
 
     pub async fn read_vesc_packet(rx: &mut impl Read) -> Option<Vec<u8, 32>> {
-        let mut buffer = [0u8; 1];
+        let mut byte = [0u8; 1];
 
-        loop {
-            rx.read_exact(&mut buffer).await.ok()?;
-            if buffer[0] == 2 {
-                break;
-            }
-        } // we don't care about type 3 packet for now
+        // Sync to start marker (type 2). We don't care about type 3 packets for now.
+        while byte[0] != 2 {
+            rx.read_exact(&mut byte).await.ok()?;
+        }
 
-        rx.read_exact(&mut buffer).await.ok()?;
-        let size = buffer[0];
+        rx.read_exact(&mut byte).await.ok()?;
+        let size = byte[0] as usize;
+        if size > 32 {
+            warn!("VESC packet too large: {} bytes", size);
+            return None;
+        }
+
+        let mut payload_buf = [0u8; 32];
+        rx.read_exact(&mut payload_buf[..size]).await.ok()?;
 
         let mut payload = heapless::Vec::<u8, 32>::new();
-        for _ in 0..size {
-            rx.read_exact(&mut buffer).await.ok()?;
-            payload.push(buffer[0]).ok()?;
-        }
+        payload.extend_from_slice(&payload_buf[..size]).ok()?;
 
         let mut crc = [0u8; 2];
         rx.read_exact(&mut crc).await.ok()?;
@@ -131,9 +133,9 @@ impl VescReply {
             return None;
         }
 
-        rx.read_exact(&mut buffer).await.ok()?;
-        if buffer[0] != 3 {
-            warn!("VESC packet end marker mismatch: got={}", buffer[0]);
+        rx.read_exact(&mut byte).await.ok()?;
+        if byte[0] != 3 {
+            warn!("VESC packet end marker mismatch: got={}", byte[0]);
             return None;
         }
 
