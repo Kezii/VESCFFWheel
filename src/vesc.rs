@@ -57,8 +57,7 @@ impl VescCommand {
     }
 
     fn create_vesc_command(payload: Vec<u8, 32>) -> Vec<u8, 32> {
-        let vesccrc = crc::Crc::<u16>::new(&VESC_CRC_ALG);
-        let mut digest = vesccrc.digest();
+        let mut digest = VESC_CRC.digest();
         digest.update(&payload);
         let crc = digest.finalize();
 
@@ -119,8 +118,7 @@ impl VescReply {
         let mut crc = [0u8; 2];
         rx.read_exact(&mut crc).await.ok()?;
 
-        let vesccrc = crc::Crc::<u16>::new(&VESC_CRC_ALG);
-        let mut digest = vesccrc.digest();
+        let mut digest = VESC_CRC.digest();
         digest.update(&payload);
         let computed_crc = digest.finalize();
 
@@ -172,9 +170,10 @@ const VESC_CRC_ALG: crc::Algorithm<u16> = crc::Algorithm {
     refout: false,
     xorout: 0x0000,
     check: 0x0000,
-    residue: 0x0000
+    residue: 0x0000,
 };
 
+const VESC_CRC: crc::Crc<u16> = crc::Crc::<u16>::new(&VESC_CRC_ALG);
 
 #[repr(u8)]
 #[allow(non_camel_case_types)]
