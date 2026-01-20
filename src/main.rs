@@ -4,11 +4,11 @@
 mod descriptor;
 mod ffb;
 mod io;
+mod perfcounter;
 mod vesc;
 
-use core::sync::atomic::{AtomicI16, AtomicU16, Ordering};
-
 use crate::io::wheel::{VescWheelSampler, VescWheelSetter};
+use crate::perfcounter::PerfCounter;
 use defmt::{debug, info, warn};
 use embassy_executor::Spawner;
 use embassy_rp::bind_interrupts;
@@ -19,9 +19,8 @@ use embassy_rp::uart::{
 use embassy_rp::usb::{Driver, InterruptHandler};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
-use embassy_sync::lazy_lock::LazyLock;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Ticker, Timer};
+use embassy_time::Timer;
 use embassy_usb::class::hid::{HidReader, HidReaderWriter, HidWriter, ReportId, RequestHandler};
 use embassy_usb::control::OutResponse;
 use embassy_usb::{Builder, Config};
@@ -146,59 +145,6 @@ async fn wheel_apply_force_task(
 
 pub static WHEEL_FORCE_SIGNAL: Signal<CriticalSectionRawMutex, i16> = Signal::new();
 static WHEEL_POS_SIGNAL: Signal<CriticalSectionRawMutex, i16> = Signal::new();
-
-#[derive(Default)]
-pub struct PerfCounter {
-    n_hid_writes: AtomicU16,
-    n_hid_reads: AtomicU16,
-    n_vesc_reads: AtomicU16,
-    n_vesc_writes: AtomicU16,
-}
-
-impl PerfCounter {
-    pub fn increment_hid_write(&self) {
-        self.n_hid_writes.store(
-            self.n_hid_writes.load(Ordering::Relaxed) + 1,
-            Ordering::Relaxed,
-        );
-    }
-
-    pub fn increment_hid_read(&self) {
-        self.n_hid_reads.store(
-            self.n_hid_reads.load(Ordering::Relaxed) + 1,
-            Ordering::Relaxed,
-        );
-    }
-
-    pub fn increment_vesc_read(&self) {
-        self.n_vesc_reads.store(
-            self.n_vesc_reads.load(Ordering::Relaxed) + 1,
-            Ordering::Relaxed,
-        );
-    }
-
-    pub fn increment_vesc_write(&self) {
-        self.n_vesc_writes.store(
-            self.n_vesc_writes.load(Ordering::Relaxed) + 1,
-            Ordering::Relaxed,
-        );
-    }
-
-    pub fn log_performance(&self) {
-        let vesc_reads = self.n_vesc_reads.load(Ordering::Relaxed);
-        let vesc_writes = self.n_vesc_writes.load(Ordering::Relaxed);
-        let hid_reads = self.n_hid_reads.load(Ordering::Relaxed);
-        let hid_writes = self.n_hid_writes.load(Ordering::Relaxed);
-        info!(
-            "PERF vesc_reads={:03} -> hid_writes={:03} ;  hid_reads={:03} -> vesc_writes={:03}",
-            vesc_reads, hid_writes, hid_reads, vesc_writes
-        );
-        self.n_hid_writes.store(0, Ordering::Relaxed);
-        self.n_hid_reads.store(0, Ordering::Relaxed);
-        self.n_vesc_reads.store(0, Ordering::Relaxed);
-        self.n_vesc_writes.store(0, Ordering::Relaxed);
-    }
-}
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {

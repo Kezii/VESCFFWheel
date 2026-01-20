@@ -1,17 +1,13 @@
 use defmt::{debug, info, warn};
-use embassy_futures::select::{Either, select};
 use embedded_io_async::{Read, Write};
 
-use crate::vesc::{COMM_PACKET_ID, DispPosMode, VescCommand, VescReply};
+use crate::vesc::{DispPosMode, VescCommand, VescReply};
 
 pub const CONFIG_DEFAULT_GAIN: f32 = 0.30;
 pub const CONFIG_DEFAULT_CENTERPOINT: f32 = 145.0 / 360.0;
 pub const CONFIG_DEFAULT_ANGLE_DEG: f32 = 540.0;
 
-pub async fn prepare_vesc<Tx, Rx>(
-    mut tx: Tx,
-    mut rx: Rx,
-) -> (VescWheelSampler<Rx>, VescWheelSetter<Tx>)
+pub async fn prepare_vesc<Tx, Rx>(mut tx: Tx, rx: Rx) -> (VescWheelSampler<Rx>, VescWheelSetter<Tx>)
 where
     Tx: Write,
     Rx: Read,
@@ -52,7 +48,6 @@ where
         }
     }
 
-    // this is not robust against corruption / packet loss
     async fn read_rotor_position_deg(&mut self) -> Option<f32> {
         match VescReply::eat_vesc_packet(&mut self.rx).await {
             Some(VescReply::MotorPosition(pos)) => Some(pos),
