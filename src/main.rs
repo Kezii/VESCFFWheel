@@ -210,7 +210,7 @@ async fn main(spawner: Spawner) {
     let hid_config = embassy_usb::class::hid::Config {
         report_descriptor: descriptor::REPORT_DESCRIPTOR,
         request_handler: Some(control_handler),
-        poll_ms: 4,
+        poll_ms: 1,
         max_packet_size: 64,
     };
 
